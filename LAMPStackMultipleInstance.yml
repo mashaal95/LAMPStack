@@ -1,0 +1,263 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+   AWS CloudFormation Sample Template: Create a multi instance LAMP
+  stack with an Amazon RDS database instance for the backend data
+  store. This script demonstrates using the AWS CloudFormation bootstrap
+  scripts to install the packages and files necessary to deploy the Apache web
+  server and PHP at instance launch time, using the latest available Apache and PHP versions. The script also clones the repo from git https://github.com/banago/simple-php-website and deploys the website on the stack.
+Parameters:
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+  DBInstanceClass:
+    Description: The database instance type
+    Type: String
+    Default: db.t2.micro
+  DBAllocatedStorage:
+    Default: '5'
+    Description: The size of the database (Gb)
+    Type: Number
+    MinValue: '5'
+    MaxValue: '1024'
+    ConstraintDescription: must be between 5 and 1024Gb.  
+  DBName:
+    Default: MyDatabase
+    Description: MySQL database name
+    Type: String
+    MinLength: '1'
+    MaxLength: '64'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    ConstraintDescription: must begin with a letter and contain only alphanumeric characters.
+  DBUser:
+    NoEcho: 'true'
+    Description: Username for MySQL database access
+    Type: String
+    MinLength: '1'
+    MaxLength: '16'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    ConstraintDescription: must begin with a letter and contain only alphanumeric characters.
+  DBPassword:
+    NoEcho: 'true'
+    Description: Password for MySQL database access
+    Type: String
+    MinLength: '1'
+    MaxLength: '41'
+    AllowedPattern: '[a-zA-Z0-9]*'
+    ConstraintDescription: must contain only alphanumeric characters.
+  DBRootPassword:
+    NoEcho: 'true'
+    Description: Root password for MySQL
+    Type: String
+    MinLength: '1'
+    MaxLength: '41'
+    AllowedPattern: '[a-zA-Z0-9]*'
+    ConstraintDescription: must contain only alphanumeric characters.
+  InstanceType:
+    Description: WebServer EC2 instance type
+    Type: String
+    Default: t2.small
+    AllowedValues:
+      - t2.micro
+      - t2.small
+    ConstraintDescription: must be a valid EC2 instance type.
+  SSHLocation:
+    Description: ' The IP address range that can be used to SSH to the EC2 instances'
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 0.0.0.0/0
+    AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})'
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+Mappings:
+  AWSInstanceType2Arch:
+    t1.micro:
+      Arch: HVM64
+    t2.nano:
+      Arch: HVM64
+    t2.micro:
+      Arch: HVM64
+  AWSInstanceType2NATArch:
+    t2.micro:
+      Arch: NATHVM64
+    t2.small:
+      Arch: NATHVM64
+  AWSRegionArch2AMI:
+    ap-southeast-2:
+      HVM64: ami-04f77aa5970939148
+      HVMG2: ami-01bdd32fb6f4e4f51
+Resources:
+  WebServerInstance:
+    Type: 'AWS::EC2::Instance'
+    Metadata:
+      AWS::CloudFormation::Init: 
+        configSets: 
+          ascending: 
+            - "config1"
+            - "config2"
+          descending: 
+            - "config2"
+            - "config1"
+        config1: 
+          commands: 
+            test: 
+              command: "echo \"$CFNTEST\" > test.txt"
+              env: 
+                CFNTEST: "I come from config1."
+              cwd: "~"
+        config2: 
+          commands: 
+            test: 
+              command: "echo \"$CFNTEST\" > test.txt"
+              env: 
+                CFNTEST: "I come from config2"
+              cwd: "~"
+    Properties:
+      ImageId: !FindInMap 
+        - AWSRegionArch2AMI
+        - !Ref 'AWS::Region'
+        - !FindInMap 
+          - AWSInstanceType2Arch
+          - !Ref InstanceType
+          - Arch
+      InstanceType: !Ref InstanceType
+      SecurityGroups:
+        - !Ref WebServerSecurityGroup
+      KeyName: !Ref KeyName
+      UserData: !Base64 
+         'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -xe
+            - |
+              sudo su
+            - | 
+              yum update -y
+            - |
+              yum install -y amazon-linux-extras
+            - |
+              amazon-linux-extras install php7.1
+            - |
+              yum install -y git httpd
+            - |
+              git clone https://github.com/banago/simple-php-website.git
+            - |
+              service httpd start
+            - |
+              chkconfig httpd on
+            - |
+              cp -a simple-php-website/. /var/www/html/
+            - |
+              # Install the files and packages from the metadata
+            - '/opt/aws/bin/cfn-init -v '
+            - '         --stack '
+            - !Ref 'AWS::StackName'
+            - '         --resource WebServerInstance '
+            - '         --configsets ascending '
+            - '         --region '
+            - !Ref 'AWS::Region'
+            - |+
+
+            - |
+              # Signal the status from cfn-init
+            - '/opt/aws/bin/cfn-signal -e $? '
+            - '         --stack '
+            - !Ref 'AWS::StackName'
+            - '         --resource WebServerInstance '
+            - '         --region '
+            - !Ref 'AWS::Region'
+            - |+
+
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT5M
+  WebServerSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Enable HTTP access via port 80
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: !Ref SSHLocation
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: cf2e7fe0-b20a-4ecd-8b62-2eac95561dc9
+  MySQLDBInstance:
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      Engine: MySQL
+      DBName: !Ref DBName
+      MasterUsername: !Ref DBUser
+      MasterUserPassword: !Ref DBPassword
+      AllocatedStorage: !Ref DBAllocatedStorage
+      DBInstanceClass: !Ref DBInstanceClass
+      DBSecurityGroups:
+        - !Ref DBSecurityGroup
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: f74f5cdf-6f98-44c1-ba64-162165d1c3ba
+  DBSecurityGroup: 
+    Type: 'AWS::RDS::DBSecurityGroup'
+    Properties:
+      DBSecurityGroupIngress: 
+      - 
+        EC2SecurityGroupName: 
+          Ref: "WebServerSecurityGroup"
+      GroupDescription: "Frontend Access"
+Outputs:
+  WebsiteURL:
+    Description: URL for newly created LAMP stack
+    Value: !Join 
+      - ''
+      - - 'http://'
+        - !GetAtt 
+          - WebServerInstance
+          - PublicDnsName
+Metadata:
+  'AWS::CloudFormation::Designer':
+    cf2e7fe0-b20a-4ecd-8b62-2eac95561dc9:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 60
+        'y': 90
+      z: 1
+      embeds: []
+    13ddf0ca-b033-4620-9ab8-2ab1fa2974e6:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: -140
+        'y': 90
+      z: 1
+      embeds: []
+      isassociatedwith:
+        - cf2e7fe0-b20a-4ecd-8b62-2eac95561dc9
+    f74f5cdf-6f98-44c1-ba64-162165d1c3ba:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 480
+        'y': 90
+      z: 1
+      embeds: []
+      isassociatedwith:
+        - e67d0909-723f-4e02-ac5a-cd104a05b8e3
+        - 7c9f7fb5-57be-41c6-a2f8-1bb16dec7f21
+    7c9f7fb5-57be-41c6-a2f8-1bb16dec7f21:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 270
+        'y': 90
+      z: 1
+      embeds: []
